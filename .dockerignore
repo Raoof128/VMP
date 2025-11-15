@@ -1,0 +1,60 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+dist
+build
+.eggs
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Documentation (not needed in container)
+docs/
+*.md
+!README.md
+
+# CI/CD
+.github/
+
+# Local data (mounted as volumes)
+data/
+logs/
+
+# Development files
+Makefile
+setup.py
+requirements-dev.txt
+
+# Environment files (use docker-compose env_file)
+.env
+.env.local
+.env.production
+
+# Temporary files
+*.tmp
+*.temp
+*.log

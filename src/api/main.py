@@ -3,7 +3,7 @@ Vulnerability Management Pipeline - FastAPI Application
 Main API entry point
 """
 
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 import os
@@ -144,7 +144,7 @@ async def get_vulnerability(cve_id: str, db: Session = Depends(get_db)):
     ).first()
 
     if not vulnerability:
-        return {"error": "Vulnerability not found"}, 404
+        raise HTTPException(status_code=404, detail=f"Vulnerability {cve_id} not found")
 
     return {
         "id": vulnerability.id,

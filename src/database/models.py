@@ -253,7 +253,7 @@ class Asset(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
-    vulnerabilities = relationship("Asset", secondary=asset_vulnerability, back_populates="affected_assets")
+    vulnerabilities = relationship("Vulnerability", secondary=asset_vulnerability, back_populates="affected_assets")
     scans = relationship("Scan", back_populates="target_asset", cascade="all, delete-orphan")
 
     # Indexes
