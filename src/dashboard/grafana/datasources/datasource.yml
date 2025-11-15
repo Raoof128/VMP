@@ -1,0 +1,49 @@
+# Grafana Datasource Configuration for VMP
+
+apiVersion: 1
+
+datasources:
+  # PostgreSQL - Main Database
+  - name: VMP PostgreSQL
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    database: vuln_management
+    user: vmp_admin
+    secureJsonData:
+      password: ${DB_PASSWORD}
+    jsonData:
+      sslmode: 'disable'
+      maxOpenConns: 100
+      maxIdleConns: 100
+      connMaxLifetime: 14400
+      postgresVersion: 1500
+      timescaledb: false
+    editable: true
+    isDefault: true
+
+  # Prometheus - Metrics
+  - name: VMP Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    jsonData:
+      httpMethod: POST
+      manageAlerts: true
+      prometheusType: Prometheus
+      prometheusVersion: 2.45.0
+      cacheLevel: 'High'
+      incrementalQuerying: true
+      incrementalQueryOverlapWindow: 10m
+    editable: true
+
+  # Redis (via Prometheus Redis Exporter if added)
+  - name: VMP Redis
+    type: prometheus
+    access: proxy
+    url: http://redis-exporter:9121
+    jsonData:
+      httpMethod: POST
+    editable: true
+    orgId: 1
+    version: 1

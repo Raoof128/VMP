@@ -1,0 +1,292 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop, 'claude/**' ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # =============================================================================
+  # Code Quality & Linting
+  # =============================================================================
+  lint:
+    name: Code Quality Checks
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8 black isort mypy pylint
+        pip install -r requirements.txt
+
+    - name: Run Black (code formatting check)
+      run: black --check --diff src/ tests/
+
+    - name: Run isort (import sorting check)
+      run: isort --check-only --diff src/ tests/
+
+    - name: Run Flake8 (linting)
+      run: flake8 src/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
+
+    - name: Run Flake8 (complexity and style)
+      run: flake8 src/ tests/ --count --max-complexity=10 --max-line-length=127 --statistics
+      continue-on-error: true
+
+    - name: Run MyPy (type checking)
+      run: mypy src/ --ignore-missing-imports --no-strict-optional
+      continue-on-error: true
+
+  # =============================================================================
+  # Security Scanning
+  # =============================================================================
+  security:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install safety bandit
+
+    - name: Run Safety (dependency vulnerability scan)
+      run: safety check --json || true
+      continue-on-error: true
+
+    - name: Run Bandit (security issues scan)
+      run: bandit -r src/ -f json -o bandit-report.json || true
+      continue-on-error: true
+
+    - name: Upload Bandit report
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: bandit-security-report
+        path: bandit-report.json
+
+  # =============================================================================
+  # Unit & Integration Tests
+  # =============================================================================
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: vmp_test
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov pytest-asyncio pytest-mock
+
+    - name: Run unit tests
+      env:
+        DATABASE_URL: postgresql://test_user:test_password@localhost:5432/vmp_test
+        CELERY_BROKER_URL: redis://localhost:6379/0
+      run: |
+        pytest tests/unit/ -v --cov=src --cov-report=xml --cov-report=term
+
+    - name: Run integration tests
+      env:
+        DATABASE_URL: postgresql://test_user:test_password@localhost:5432/vmp_test
+        CELERY_BROKER_URL: redis://localhost:6379/0
+      run: |
+        pytest tests/integration/ -v --cov=src --cov-append --cov-report=xml --cov-report=term
+      continue-on-error: true
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+  # =============================================================================
+  # Docker Build & Test
+  # =============================================================================
+  docker:
+    name: Docker Build Test
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: false
+        tags: vmp:test
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Test Docker image
+      run: |
+        docker run --rm vmp:test python --version
+        docker run --rm vmp:test pip list
+
+  # =============================================================================
+  # Documentation Build
+  # =============================================================================
+  docs:
+    name: Documentation Build
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Validate Markdown links
+      uses: gaurav-nelson/github-action-markdown-link-check@v1
+      with:
+        use-quiet-mode: 'yes'
+        config-file: '.github/markdown-link-check-config.json'
+      continue-on-error: true
+
+    - name: Check documentation completeness
+      run: |
+        echo "Checking required documentation files..."
+        test -f README.md || exit 1
+        test -f docs/ARCHITECTURE.md || exit 1
+        test -f docs/SETUP.md || exit 1
+        test -f CHANGELOG.md || exit 1
+        test -f CONTRIBUTING.md || exit 1
+        test -f SECURITY.md || exit 1
+        echo "All required documentation files present!"
+
+  # =============================================================================
+  # Dependency Review (PR only)
+  # =============================================================================
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Dependency Review
+      uses: actions/dependency-review-action@v3
+      with:
+        fail-on-severity: moderate
+
+  # =============================================================================
+  # Performance Tests (main branch only)
+  # =============================================================================
+  performance:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest-benchmark
+
+    - name: Run performance tests
+      run: |
+        pytest tests/unit/test_risk_scoring.py -v -k performance --benchmark-only
+      continue-on-error: true
+
+  # =============================================================================
+  # Build Summary
+  # =============================================================================
+  build-success:
+    name: Build Summary
+    runs-on: ubuntu-latest
+    needs: [lint, security, test, docker, docs]
+    if: always()
+
+    steps:
+    - name: Check build status
+      run: |
+        echo "Lint: ${{ needs.lint.result }}"
+        echo "Security: ${{ needs.security.result }}"
+        echo "Tests: ${{ needs.test.result }}"
+        echo "Docker: ${{ needs.docker.result }}"
+        echo "Docs: ${{ needs.docs.result }}"
+
+        if [ "${{ needs.lint.result }}" != "success" ]; then
+          echo "❌ Linting failed"
+        fi
+        if [ "${{ needs.test.result }}" != "success" ]; then
+          echo "❌ Tests failed"
+        fi
+        if [ "${{ needs.docker.result }}" != "success" ]; then
+          echo "❌ Docker build failed"
+        fi
