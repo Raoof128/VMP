@@ -1,0 +1,223 @@
+version: '3.8'
+
+services:
+  # =============================================================================
+  # PostgreSQL Database
+  # =============================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: vmp-postgres
+    environment:
+      POSTGRES_DB: ${DB_NAME:-vuln_management}
+      POSTGRES_USER: ${DB_USER:-vmp_admin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme_secure_password}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./config/postgres:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-vmp_admin}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vmp-network
+    restart: unless-stopped
+
+  # =============================================================================
+  # Redis (for Celery task queue)
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: vmp-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - vmp-network
+    restart: unless-stopped
+
+  # =============================================================================
+  # OpenVAS Vulnerability Scanner
+  # =============================================================================
+  openvas:
+    image: greenbone/openvas-scanner:latest
+    container_name: vmp-openvas
+    environment:
+      - OPENVAS_USERNAME=${OPENVAS_USERNAME:-admin}
+      - OPENVAS_PASSWORD=${OPENVAS_PASSWORD:-changeme_openvas_password}
+    volumes:
+      - openvas_data:/var/lib/openvas
+      - openvas_logs:/var/log/gvm
+    ports:
+      - "9390:9390"  # GVM daemon
+      - "9392:9392"  # Web UI (GSA)
+    networks:
+      - vmp-network
+    restart: unless-stopped
+    # Note: OpenVAS requires significant resources
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+
+  # =============================================================================
+  # FastAPI Application
+  # =============================================================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vmp-api
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-vmp_admin}:${DB_PASSWORD:-changeme_secure_password}@postgres:5432/${DB_NAME:-vuln_management}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - OPENVAS_HOST=openvas
+    volumes:
+      - ./src:/app/src
+      - ./config:/app/config
+      - ./data:/app/data
+      - ./logs:/app/logs
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - vmp-network
+    restart: unless-stopped
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # =============================================================================
+  # Celery Worker (Background Tasks)
+  # =============================================================================
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vmp-celery-worker
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-vmp_admin}:${DB_PASSWORD:-changeme_secure_password}@postgres:5432/${DB_NAME:-vuln_management}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+    volumes:
+      - ./src:/app/src
+      - ./config:/app/config
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - vmp-network
+    restart: unless-stopped
+    command: celery -A src.workflow.celery_app worker --loglevel=info
+
+  # =============================================================================
+  # Celery Beat (Scheduler)
+  # =============================================================================
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vmp-celery-beat
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-vmp_admin}:${DB_PASSWORD:-changeme_secure_password}@postgres:5432/${DB_NAME:-vuln_management}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+    volumes:
+      - ./src:/app/src
+      - ./config:/app/config
+      - ./data:/app/data
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - vmp-network
+    restart: unless-stopped
+    command: celery -A src.workflow.celery_app beat --loglevel=info
+
+  # =============================================================================
+  # Grafana (Dashboard & Visualization)
+  # =============================================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: vmp-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-changeme_grafana_password}
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./src/dashboard/grafana:/etc/grafana/provisioning
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - postgres
+    networks:
+      - vmp-network
+    restart: unless-stopped
+
+  # =============================================================================
+  # Prometheus (Metrics Collection)
+  # =============================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: vmp-prometheus
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - vmp-network
+    restart: unless-stopped
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  openvas_data:
+    driver: local
+  openvas_logs:
+    driver: local
+  grafana_data:
+    driver: local
+  prometheus_data:
+    driver: local
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  vmp-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
