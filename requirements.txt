@@ -15,6 +15,7 @@ databases[postgresql]==0.8.0
 
 # Security & Scanning
 python-nmap==0.7.1
+python-gvm==24.6.0
 requests==2.31.0
 urllib3==2.1.0
 
